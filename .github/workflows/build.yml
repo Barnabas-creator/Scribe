@@ -5,6 +5,11 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+# Creating/updating a GitHub Release needs write access; the default token is
+# read-only.
+permissions:
+  contents: write
+
 # Installers bundle a standalone Python interpreter plus MinerU (torch and
 # friends), so both jobs take a while and produce ~1.5 GB app directories.
 # Model weights are NOT bundled -- the app downloads them on demand.
