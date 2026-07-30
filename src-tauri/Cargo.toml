@@ -1,0 +1,30 @@
+[package]
+name = "pdf2word"
+version = "0.1.0"
+description = "Turn PDFs into editable Word documents with native equations"
+edition = "2021"
+rust-version = "1.70"
+
+[build-dependencies]
+tauri-build = { version = "1.5", features = [] }
+
+[dependencies]
+# default-features=false drops "compression" (pulls in a broken brotli/alloc-stdlib
+# combo); we don't need asset compression for a handful of small frontend files.
+# Keep "wry" (webview) and "objc-exception" (macOS) which are the other defaults.
+tauri = { version = "1.5", default-features = false, features = ["wry", "objc-exception", "macos-private-api", "dialog-open", "shell-open", "window-close", "window-minimize", "window-maximize", "window-unmaximize", "window-start-dragging"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# macOS-only. Native vibrancy (NSVisualEffectView) cannot be reproduced with CSS
+# backdrop-filter, which only blurs the page's own content. cocoa/objc are needed
+# to set NSWindow.appearance so the material follows the theme. These crates pull
+# in core-foundation and unix-only libc items, so they must not be built on
+# other platforms.
+[target.'cfg(target_os = "macos")'.dependencies]
+window-vibrancy = "0.4"
+cocoa = "0.25"
+objc = "0.2"
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]

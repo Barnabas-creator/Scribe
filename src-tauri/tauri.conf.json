@@ -1,0 +1,74 @@
+{
+  "build": {
+    "beforeDevCommand": "",
+    "beforeBuildCommand": "",
+    "devPath": "../src/p2w_gui/frontend",
+    "distDir": "../src/p2w_gui/frontend",
+    "withGlobalTauri": true
+  },
+  "package": {
+    "productName": "抄录",
+    "version": "0.1.0"
+  },
+  "tauri": {
+    "macOSPrivateApi": true,
+    "allowlist": {
+      "dialog": {
+        "open": true
+      },
+      "shell": {
+        "open": true,
+        "scope": []
+      },
+      "window": {
+        "close": true,
+        "minimize": true,
+        "maximize": true,
+        "unmaximize": true,
+        "startDragging": true
+      }
+    },
+    "windows": [
+      {
+        "url": "pdf2word.html",
+        "title": "抄录",
+        "width": 880,
+        "height": 720,
+        "minWidth": 640,
+        "minHeight": 520,
+        "decorations": true,
+        "transparent": true,
+        "titleBarStyle": "Overlay",
+        "resizable": true,
+        "center": true,
+        "hiddenTitle": true
+      }
+    ],
+    "security": {
+      "csp": null
+    },
+    "bundle": {
+      "active": true,
+      "identifier": "com.jing.scribe",
+      "icon": [
+        "icons/32x32.png",
+        "icons/128x128.png",
+        "icons/128x128@2x.png",
+        "icons/icon.icns",
+        "icons/icon.ico"
+      ],
+      "windows": {
+        "certificateThumbprint": null,
+        "digestAlgorithm": "sha256",
+        "timestampUrl": "",
+        "nsis": {
+          "languages": [
+            "SimpChinese",
+            "English"
+          ],
+          "installMode": "currentUser"
+        }
+      }
+    }
+  }
+}

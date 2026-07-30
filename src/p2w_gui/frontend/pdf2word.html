@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>抄录</title>
+  <!-- 字体改用系统中文字体，避免依赖 Google Fonts CDN（离线/国内可用） -->
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="root"></div>
+
+  <script>
+    // Gate entrance animations on visibility: base style is the visible
+    // end-state; only animate when the tab is actually painting frames.
+    requestAnimationFrame(function () {
+      document.documentElement.setAttribute('data-animate', '');
+    });
+  </script>
+
+  <!-- 预编译产物：vendor React + bundle.js（由 scripts/build_frontend.js 生成）。
+       不再用 babel 运行时 fetch 外部 jsx —— 那在 Tauri asset 协议下会失败导致白屏。 -->
+  <script src="vendor/react.production.min.js"></script>
+  <script src="vendor/react-dom.production.min.js"></script>
+  <script src="bundle.js"></script>
+</body>
+</html>

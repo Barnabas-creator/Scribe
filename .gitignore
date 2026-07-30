@@ -1,0 +1,36 @@
+# --- Working scratch space (holds real user documents; never commit) ---
+tmp/
+output/
+_incoming_design/
+*.zip
+
+# --- Build artifacts ---
+src-tauri/target/
+src-tauri/payload/
+src/p2w_gui/frontend/bundle.js
+
+# --- Virtual environments and caches ---
+.venv*/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+node_modules/
+
+# --- Conversion outputs ---
+*_word/
+*.docx
+*.复核报告.html
+*.错误详情.txt
+!tests/fixtures/*
+
+# --- OS / editor ---
+.DS_Store
+.claude/
+*.swp
+
+# --- Internal working documents (AI-assistant instructions, dev notes) ---
+CLAUDE.md
+AGENTS.md
+folder.md
+**/folder.md
+docs/*.md

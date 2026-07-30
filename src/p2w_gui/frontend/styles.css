@@ -1,0 +1,614 @@
+/* ============================================================
+   Scribe design system
+
+   The app is a converter, not a workbench: drop files, wait, take the document.
+   One window, no navigation.
+
+   Material: the window is transparent and macOS NSVisualEffectView provides the
+   frosted backdrop (see apply_vibrancy in main.rs). CSS only paints content that
+   floats on that glass and must never fill an opaque background.
+   ============================================================ */
+
+:root {
+  /* One accent color. Green/amber/red are semantic only, never decorative. */
+  --accent: #0e7c5b;
+  --accent-hi: #12a174;
+  --accent-soft: rgba(14, 124, 91, 0.12);
+  --on-accent: #fff;
+
+  --ok: #1a8a4d;
+  --warn: #a8720d;
+  --err: #c9372c;
+
+  /* Text uses opacity tiers like macOS label levels, weighted for glass. */
+  --ink: rgba(0, 0, 0, 0.88);
+  --ink-2: rgba(0, 0, 0, 0.62);
+  --ink-3: rgba(0, 0, 0, 0.42);
+
+  /* Content layer over glass: low-opacity white so the material shows through. */
+  --fill: rgba(255, 255, 255, 0.55);
+  --fill-hi: rgba(255, 255, 255, 0.8);
+  --hair: rgba(0, 0, 0, 0.09);
+  --rim: rgba(255, 255, 255, 0.65);      /* top edge highlight */
+
+  --r-card: 12px;
+  --r-ctrl: 8px;
+  --r-pill: 999px;
+
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --t-fast: 0.13s;
+  --t-mid: 0.26s;
+
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+  color-scheme: light;
+}
+
+.theme-dark {
+  --accent: #3bb48d;
+  --accent-hi: #55cba4;
+  --accent-soft: rgba(59, 180, 141, 0.16);
+  --on-accent: #06231a;
+
+  --ok: #4cd08a;
+  --warn: #e0b155;
+  --err: #ff6f63;
+
+  --ink: rgba(255, 255, 255, 0.95);
+  --ink-2: rgba(255, 255, 255, 0.68);
+  --ink-3: rgba(255, 255, 255, 0.46);
+
+  --fill: rgba(255, 255, 255, 0.09);
+  --fill-hi: rgba(255, 255, 255, 0.16);
+  --hair: rgba(255, 255, 255, 0.12);
+  --rim: rgba(255, 255, 255, 0.14);
+
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+
+body {
+  font: 13.5px/1.6 var(--sans);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  /* Transparent by design: the system layer owns the material. */
+  background: transparent;
+}
+
+button { font-family: inherit; }
+kbd {
+  font: 600 11px var(--sans);
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--fill-hi);
+  box-shadow: inset 0 0 0 0.5px var(--hair), 0 1px 0 var(--hair);
+}
+.spacer { flex: 1; }
+
+/* ==================== Window frame ==================== */
+.app-root {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  color: var(--ink);
+}
+
+/* Title bar: brand and gear only; the whole strip drags the window.
+   72px is reserved on the left for the system traffic lights. */
+.titlebar {
+  flex: 0 0 auto;
+  height: 58px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px 0 80px;
+  user-select: none;
+  -webkit-app-region: drag;
+}
+.titlebar button { -webkit-app-region: no-drag; }
+/* Brand block: icon, name, tagline. */
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.brand-icon {
+  width: 34px; height: 34px; flex: 0 0 auto;
+  display: grid; place-items: center;
+  border-radius: 9px;
+  background: linear-gradient(180deg, var(--accent-hi), var(--accent));
+  color: #fff;
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.4), 0 2px 6px -2px rgba(0, 0, 0, 0.35);
+}
+.brand-text { display: flex; flex-direction: column; gap: 3px; line-height: 1.3; min-width: 0; }
+.title-name { font-size: 17px; font-weight: 800; letter-spacing: 0.01em; }
+.title-tag { font-size: 11.5px; color: var(--ink-2); }
+.title-sub { font-size: 12.5px; color: var(--ink-2); }
+/* Engine toggle gets its own row and is larger than a normal segmented control:
+   whether files leave the machine is not a detail. */
+.engine-bar {
+  flex: 0 0 auto;
+  display: flex; justify-content: center;
+  padding: 2px 0 10px;
+}
+.seg.seg-engine button {
+  height: 32px; padding: 0 20px;
+  font-size: 13.5px; font-weight: 700;
+}
+.title-spacer { flex: 1; }
+
+/* Body: the only content area. */
+.body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+/* Action bar: holds the single primary action. */
+.actionbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px 16px 16px;
+  position: relative;
+}
+/* Fade instead of a divider when content scrolls beneath. */
+.actionbar::before {
+  content: "";
+  position: absolute; left: 0; right: 0; bottom: 100%; height: 20px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.05), transparent);
+  pointer-events: none;
+}
+.theme-dark .actionbar::before {
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.22), transparent);
+}
+
+/* ==================== Drop zone (empty state) ==================== */
+.drop {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px 32px;
+  text-align: center;
+  outline: none;
+  transition: background var(--t-mid) var(--ease);
+}
+.drop-glyph { cursor: pointer; outline: none; border-radius: 16px; padding: 8px 16px; }
+.drop-glyph:hover .tray { transform: translateY(-3px); }
+.drop.over { background: var(--accent-soft); }
+.drop.gate { cursor: default; }
+
+.drop-glyph { position: relative; margin-bottom: 4px; }
+
+/* The drop glyph is an open tray, drawn in CSS. */
+.tray {
+  width: 120px; height: 82px;
+  position: relative;
+  transition: transform var(--t-mid) var(--ease);
+}
+.drop.over .tray { transform: translateY(-4px) scale(1.05); }
+.tray::before {          /* tray */
+  content: "";
+  position: absolute; left: 0; right: 0; bottom: 0; height: 44px;
+  border: 2px solid currentColor;
+  border-top: none;
+  border-radius: 0 0 14px 14px;
+  color: var(--accent);
+  opacity: 0.75;
+}
+.tray::after {           /* falling sheet */
+  content: "";
+  position: absolute; left: 50%; top: 2px;
+  width: 44px; height: 56px; margin-left: -22px;
+  border-radius: 4px;
+  background: var(--fill-hi);
+  box-shadow: inset 0 0 0 1px var(--hair), 0 8px 18px -8px rgba(0, 0, 0, 0.4);
+  transition: transform var(--t-mid) var(--ease);
+}
+.drop.over .tray::after { transform: translateY(7px); }
+
+.drop-title { font-size: 22px; font-weight: 700; letter-spacing: 0.01em; }
+.drop-hint { font-size: 13.5px; color: var(--ink-2); max-width: 400px; line-height: 1.75; }
+.drop-hint.tight { margin-top: -6px; }
+
+.drop-actions { display: flex; gap: 10px; margin-top: 8px; }
+.drop-actions .btn { flex: 0 0 auto; }
+
+.drop-tips {
+  display: flex; align-items: center; gap: 8px;
+  margin-top: 10px;
+  font-size: 12px; color: var(--ink-3);
+}
+.tip { display: inline-flex; align-items: center; gap: 4px; }
+.tip-sep { opacity: 0.6; }
+
+/* First-run engine choice cards. */
+.gate-cards { display: flex; gap: 12px; margin-top: 12px; width: 100%; max-width: 470px; }
+.gate-card {
+  flex: 1 1 0; min-width: 0;
+  text-align: left; cursor: pointer;
+  padding: 14px 16px;
+  border: none; border-radius: var(--r-card);
+  background: var(--fill);
+  box-shadow: inset 0 0.5px 0 var(--rim), inset 0 0 0 0.5px var(--hair);
+  font-family: inherit; color: var(--ink);
+  transition: background var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+}
+.gate-card:hover { background: var(--fill-hi); }
+.gate-card:active { transform: scale(0.98); }
+.gate-card b { display: block; font-size: 14px; font-weight: 700; margin-bottom: 4px; }
+.gate-card span { display: block; font: 500 12px/1.65 var(--sans); color: var(--ink-2); white-space: normal; }
+
+/* Error-boundary fallback; never a blank window. */
+.crash {
+  height: 100vh;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; padding: 30px; text-align: center;
+}
+.crash b { font-size: 17px; }
+.crash-msg { font: 500 12px var(--mono); color: var(--ink-2); max-width: 420px; word-break: break-all; }
+.crash .btn { flex: 0 0 auto; margin-top: 6px; padding: 0 26px; }
+
+/* ==================== File list ==================== */
+.list {
+  flex: 1; min-height: 0;
+  overflow-y: auto;
+  padding: 4px 14px 10px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ink-3) transparent;
+}
+.list::-webkit-scrollbar { width: 8px; }
+.list::-webkit-scrollbar-thumb {
+  background: var(--hair); border-radius: var(--r-pill);
+  border: 2px solid transparent; background-clip: padding-box;
+}
+
+.row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px;
+  border-radius: var(--r-card);
+  background: var(--fill);
+  box-shadow: inset 0 0.5px 0 var(--rim), inset 0 0 0 0.5px var(--hair);
+  margin-bottom: 6px;
+  transition: background var(--t-fast) var(--ease);
+}
+.row:hover { background: var(--fill-hi); }
+.row.failed { background: color-mix(in srgb, var(--err) 11%, transparent); }
+
+/* File type: a small block plus the extension, clearer than a line icon. */
+.ftype {
+  flex: 0 0 auto;
+  width: 32px; height: 40px;
+  border-radius: 5px;
+  background: var(--fill-hi);
+  box-shadow: inset 0 0 0 0.5px var(--hair);
+  display: grid; place-items: end center;
+  padding-bottom: 3px;
+  font: 700 9.5px/1 var(--mono);
+  letter-spacing: 0.02em;
+  color: var(--ink-3);
+  position: relative;
+}
+.ftype::before {         /* folded corner */
+  content: "";
+  position: absolute; top: 0; right: 0;
+  border: 5px solid transparent;
+  border-top-color: var(--hair);
+  border-right-color: var(--hair);
+  border-radius: 0 5px 0 0;
+}
+.ftype.pdf { color: var(--err); }
+.ftype.img { color: var(--accent); }
+
+.row-main { flex: 1; min-width: 0; }
+.row-name {
+  font-size: 13.5px; font-weight: 650;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.row-sub {
+  font-size: 12px; color: var(--ink-2); margin-top: 3px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.row-sub.warn { color: var(--warn); }
+.row-sub.err { color: var(--err); }
+
+/* Percentage: tabular numerals so the value does not jitter. */
+.pct {
+  flex: 0 0 auto;
+  font: 600 12.5px var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+  min-width: 40px; text-align: right;
+}
+
+/* Status: a single dot rather than a colored pill. */
+.dot {
+  flex: 0 0 auto;
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--ink-3);
+}
+.dot.run { background: var(--accent); animation: breathe 1.4s ease-in-out infinite; }
+.dot.ok { background: var(--ok); }
+.dot.warn { background: var(--warn); }
+.dot.err { background: var(--err); }
+@keyframes breathe { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+
+/* ============================================================
+   Progress: indeterminate while queued, determinate for real stages
+   ============================================================ */
+.track {
+  height: 4px; border-radius: var(--r-pill);
+  background: var(--hair);
+  overflow: hidden;
+  margin-top: 6px;
+}
+.bar {
+  height: 100%; border-radius: var(--r-pill);
+  background: var(--accent);
+  transform-origin: left center;
+  transition: transform 0.4s var(--ease);
+}
+.bar.indet {
+  width: 40%;
+  animation: sweep 1.4s var(--ease) infinite;
+}
+@keyframes sweep {
+  0% { margin-left: -40%; }
+  100% { margin-left: 100%; }
+}
+
+/* ============================================================
+   Running state
+   ============================================================ */
+.run-box { flex: 1; min-width: 0; }
+.run-top { display: flex; align-items: baseline; gap: 8px; }
+.run-name { flex: 1; min-width: 0; }
+.run-box .track { margin-top: 7px; }
+.run-sub { margin-top: 6px; }
+.idle-sub { margin-top: 0; }
+
+/* ============================================================
+   Buttons
+   ============================================================ */
+.btn {
+  font: 650 13.5px/1 var(--sans);
+  height: 36px; padding: 0 18px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  border: none; border-radius: var(--r-ctrl);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: transform var(--t-fast) var(--ease),
+              background var(--t-mid) var(--ease),
+              opacity var(--t-mid) var(--ease);
+}
+.btn:active:not(:disabled) { transform: scale(0.97); transition-duration: 0.05s; }
+.btn:disabled { opacity: 0.4; cursor: default; }
+.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.btn-main {
+  flex: 1;
+  height: 40px;
+  background: var(--accent);
+  color: var(--on-accent);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.25),
+              0 4px 14px -6px var(--accent);
+}
+.btn-main:hover:not(:disabled) { background: var(--accent-hi); }
+.btn-main.btn-fit { flex: 0 0 auto; }
+
+.btn-quiet {
+  background: var(--fill);
+  color: var(--ink);
+  box-shadow: inset 0 0.5px 0 var(--rim), inset 0 0 0 0.5px var(--hair);
+}
+.btn-quiet:hover:not(:disabled) { background: var(--fill-hi); }
+
+.btn-danger { background: var(--err); color: #fff; flex: 0 0 auto; }
+
+.btn-sm { height: 28px; padding: 0 12px; font-size: 12.5px; border-radius: 7px; }
+
+/* Icon buttons in the title bar. */
+.icon-btn {
+  width: 28px; height: 28px;
+  display: grid; place-items: center;
+  border: none; border-radius: 6px;
+  background: transparent; color: var(--ink-3);
+  cursor: pointer;
+  transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+.icon-btn:hover { background: var(--fill); color: var(--ink); }
+.icon-btn:active { transform: scale(0.92); }
+
+/* Text-only secondary actions. */
+.link {
+  border: none; background: none; padding: 0; cursor: pointer;
+  font: 550 12.5px var(--sans); color: var(--ink-2);
+  transition: color var(--t-fast) var(--ease);
+}
+.link:hover { color: var(--ink); }
+
+/* ==================== Completion summary ==================== */
+.summary {
+  display: flex; align-items: baseline; gap: 6px;
+  font-size: 13px; color: var(--ink);
+}
+.summary b { font: 700 17px var(--mono); font-variant-numeric: tabular-nums; }
+.summary .n-ok { color: var(--ok); }
+.summary .n-warn { color: var(--warn); margin-left: 8px; }
+.summary .n-err { color: var(--err); margin-left: 8px; }
+
+/* ============================================================
+   Overlays: settings sheet and first-run screen
+   ============================================================ */
+.sheet-mask {
+  position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 50;
+  display: grid; place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+.sheet {
+  width: 100%; max-width: 500px;
+  /* The sheet scrolls itself on short windows; content must stay reachable. */
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ink-3) transparent;
+  border-radius: 16px;
+  padding: 20px 24px 24px;
+  background: var(--fill-hi);
+  backdrop-filter: blur(30px) saturate(180%);
+  -webkit-backdrop-filter: blur(30px) saturate(180%);
+  box-shadow: inset 0 0.5px 0 var(--rim), inset 0 0 0 0.5px var(--hair),
+              0 24px 60px -18px rgba(0, 0, 0, 0.55);
+}
+.theme-dark .sheet { background: rgba(46, 46, 50, 0.78); }
+.sheet::-webkit-scrollbar { width: 8px; }
+.sheet::-webkit-scrollbar-thumb {
+  background: var(--hair); border-radius: var(--r-pill);
+  border: 2px solid transparent; background-clip: padding-box;
+}
+.sheet-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 10px;
+}
+.sheet-head h2 { margin: 0; font-size: 18px; font-weight: 700; }
+.sheet-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 13px 0;
+  border-top: 1px solid var(--hair);
+}
+.sheet-row .lbl { flex: 1; min-width: 0; }
+.sheet-row .lbl b { display: block; font-size: 14.5px; font-weight: 650; }
+.sheet-row .lbl span { display: block; font-size: 12.5px; color: var(--ink-2); margin-top: 3px; }
+.sheet-note { font-size: 12.5px; color: var(--ink-2); line-height: 1.8; margin-top: 14px; }
+
+.sheet-row.col { display: block; }
+.key-line { display: flex; gap: 8px; margin-top: 8px; }
+.key-input {
+  flex: 1; min-width: 0; height: 32px; padding: 0 12px;
+  border: none; border-radius: 7px;
+  background: var(--fill); color: var(--ink);
+  font: 500 12.5px var(--mono);
+  box-shadow: inset 0 0 0 0.5px var(--hair);
+}
+.key-input:focus { outline: none; box-shadow: inset 0 0 0 1.5px var(--accent); }
+.key-input::placeholder { color: var(--ink-3); font-family: var(--sans); }
+.key-foot { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+/* Left-aligned row: keep buttons at their natural width. */
+.key-foot .btn { flex: 0 0 auto; }
+.track.dl { margin-top: 8px; }
+.key-note {
+  margin-top: 8px;
+  font-size: 11.5px; line-height: 1.7; color: var(--ink-3);
+}
+.key-note b { color: var(--ink-2); font-weight: 650; }
+.key-state { font-size: 12px; }
+.key-state.ok { color: var(--ok); }
+.key-state.err { color: var(--err); }
+.key-state.info { color: var(--ink-2); }
+/* Saved-key badge: the only credential indicator, so it must be obvious. */
+/* Scoped to .lbl so the block-display rule above does not stretch the badge. */
+.sheet-row .lbl span.key-saved {
+  display: inline-flex; align-items: center; gap: 5px;
+  width: fit-content;
+  margin-top: 4px;
+  padding: 3px 10px 3px 7px;
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--ok) 14%, transparent);
+  color: var(--ok);
+  font: 650 12px var(--sans);
+}
+.key-saved code { font: 650 11.5px var(--mono); }
+
+.seg {
+  display: inline-flex; padding: 2px; gap: 2px;
+  border-radius: 8px;
+  background: var(--hair);
+}
+.seg button {
+  border: none; cursor: pointer; background: transparent;
+  font: 650 12.5px var(--sans); color: var(--ink-2);
+  padding: 0 12px; height: 26px; border-radius: 6px;
+  transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+/* Selected state uses the accent color: grey reads as disabled on dark glass. */
+.seg button.on {
+  background: var(--accent); color: var(--on-accent);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.22);
+}
+.seg button:disabled { opacity: 0.38; cursor: not-allowed; }
+
+.toggle {
+  width: 40px; height: 24px; flex: 0 0 auto;
+  border: none; border-radius: var(--r-pill); padding: 2px;
+  display: flex; cursor: pointer;
+  background: var(--hair);
+  transition: background var(--t-mid) var(--ease);
+}
+.toggle.on { background: var(--accent); justify-content: flex-end; }
+.toggle span {
+  width: 20px; height: 20px; border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  transition: all var(--t-mid) var(--ease);
+}
+
+/* ============================================================
+   Toast: info auto-hides in 2.4s, errors in 4.5s with a warning style
+   ============================================================ */
+.toast {
+  position: fixed; bottom: 76px; left: 50%; transform: translateX(-50%);
+  z-index: 60;
+  display: flex; align-items: center; gap: 7px;
+  max-width: 82%;
+  padding: 8px 14px;
+  border-radius: var(--r-pill);
+  font-size: 12.5px; font-weight: 550;
+  color: var(--ink);
+  background: var(--fill-hi);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  box-shadow: inset 0 0 0 0.5px var(--hair), 0 10px 28px -10px rgba(0, 0, 0, 0.4);
+}
+.theme-dark .toast { background: rgba(46, 46, 50, 0.85); }
+.toast.err { color: var(--err); }
+.toast.err svg { flex: 0 0 auto; }
+
+/* ============================================================
+   Entrance: content rises in, nothing fancy
+   ============================================================ */
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+[data-animate] .rise { animation: rise 0.36s var(--ease) both; }
+[data-animate] .fade { animation: fade 0.24s var(--ease) both; }
+
+/* ============================================================
+   Accessibility: honors reduced motion, reduced transparency, and contrast
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+  [data-animate] .rise, [data-animate] .fade { animation: fade 0.2s linear both; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  body { background: Canvas; }
+  .sheet, .toast { backdrop-filter: none; -webkit-backdrop-filter: none; background: Canvas; }
+  .sheet-mask { backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
+@media (prefers-contrast: more) {
+  :root { --ink-2: rgba(0,0,0,.74); --ink-3: rgba(0,0,0,.56); --hair: rgba(0,0,0,.3); }
+  .theme-dark { --ink-2: rgba(255,255,255,.8); --ink-3: rgba(255,255,255,.62); --hair: rgba(255,255,255,.34); }
+  .row, .btn-quiet { box-shadow: inset 0 0 0 1px var(--hair); }
+}

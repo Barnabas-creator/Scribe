@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "p2w"
+version = "0.1.0"
+description = "把扫描版 PDF/图片试卷转成可编辑 Word（公式为 Word 原生公式，图片按位置内嵌）"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "python-docx>=1.1",
+    "lxml>=5.0",
+    "Pillow>=10.0",
+    "beautifulsoup4>=4.12",  # 解析 MinerU 的表格 HTML
+    "fastapi>=0.110",        # GUI 后端 HTTP 服务
+    "uvicorn>=0.27",
+    "pypdf>=4.0",            # 选文件时读 PDF 页数
+]
+
+[project.optional-dependencies]
+dev = ["reportlab>=4.0"]
+
+[project.scripts]
+p2w = "p2w.cli:main"
+# 桌面 GUI 后端可直接运行：python -m p2w_gui.server [port]
+# 桌面 APP 外壳由 Tauri 提供，见 src-tauri/ 与 run-dev.sh（非 pip 入口）。
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+p2w_gui = ["frontend/*.html", "frontend/*.jsx", "frontend/*.css", "frontend/vendor/*", "frontend/uploads/*"]
+
+# Runtime note: 识别引擎 MinerU 装在项目根的 .venv-mineru/（依赖与本包隔离）：
+#   uv venv .venv-mineru && VIRTUAL_ENV=.venv-mineru uv pip install "mineru[core]"
+# 另需 `pandoc` 在 PATH 上（LaTeX -> OMML 公式转换）。

@@ -1,0 +1,38 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install pandoc
+        run: brew install pandoc
+
+      - name: Install Python dependencies
+        run: |
+          pip install python-docx lxml beautifulsoup4 Pillow fastapi uvicorn \
+                      pypdf pymupdf httpx
+
+      - name: Install jsdom for frontend tests
+        working-directory: tests/jstest
+        run: npm install --no-audit --no-fund
+
+      # The full suite ends with a real conversion, which needs the 2.2 GB model.
+      # CI runs everything up to that point.
+      - name: Run test suite (without real conversion)
+        run: ./tests/run_all.sh --fast
