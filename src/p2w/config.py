@@ -37,7 +37,10 @@ class ConvertOptions:
     output_subdir: str = "_word"  # output dir suffix: <stem>_word beside the source
     # Export format: docx (formulas as OMML) or md (formulas kept as LaTeX).
     export_format: str = "docx"
-    review_all_formulas: bool = True  # engine reports no confidence; flag every formula
+    # Flag every formula/table for review. Off by default: recognition is
+    # reliable enough that a wall of correct entries buries the few real
+    # problems. Conversion failures are always flagged regardless.
+    review_all_formulas: bool = False
     # ---- Cloud recognition (official mineru.net API) ----
     # A non-empty key routes recognition to the cloud: no local model needed,
     # at the cost of uploading files. Empty means local model.

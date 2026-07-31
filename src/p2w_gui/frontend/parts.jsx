@@ -79,16 +79,16 @@
       "Cloud mode uploads your files to mineru.net. Switch to local for confidential or unpublished work. ",
     "文件只在这台电脑上处理，不上传。": "Files are processed on this Mac only — nothing is uploaded. ",
     "识别准确率取决于扫描清晰度——": "Accuracy depends on scan quality — ",
-    "转换完的 Word 旁边会附一份复核报告，列出所有识别到的公式，请对照原件过一遍。":
-      "each conversion ships with a review report listing every recognized formula; please check it against the original.",
+    "转换完的 Word 旁边会附一份复核报告，列出无法自动确认的内容，请对照原件过一遍。":
+      "each conversion ships with a review report listing anything that could not be verified automatically.",
     "先挑一种识别方式": "Choose how to recognize",
     "随时可以在设置里更换。": "You can change this anytime in Settings.",
     "下载 2.2 GB 的模型，之后文件不出这台电脑，没有额度限制。适合涉密或大批量。":
       "Download a 2.2 GB model; files never leave this Mac and there is no quota. Best for confidential or bulk work.",
     "填一个 mineru.net 的 API Key，不用下模型、不占算力。文件会上传，每天 1000 页额度。":
       "Paste a mineru.net API key — no model download, no local compute. Files are uploaded; 1,000 pages/day quota.",
-    "转换完的 Word 旁会附一份复核报告，列出识别到的公式——请对照原件过一遍再用。":
-      "Each conversion ships with a review report listing recognized formulas — check it against the original before use.",
+    "转换完的 Word 旁会附一份复核报告，列出无法自动确认的内容——请对照原件过一遍再用。":
+      "Each conversion ships with a review report listing anything that could not be verified automatically.",
     "清空列表": "Clear List",
     "移除全部文件": "Remove all files",
     "正在停止…": "Stopping…",
@@ -377,7 +377,7 @@
             ? t("云端识别会把文件上传到 mineru.net。涉密或未发表的稿子请切回本机识别。")
             : t("文件只在这台电脑上处理，不上传。"),
           t("识别准确率取决于扫描清晰度——"),
-          t("转换完的 Word 旁边会附一份复核报告，列出所有识别到的公式，请对照原件过一遍。"))));
+          t("转换完的 Word 旁边会附一份复核报告，列出无法自动确认的内容，请对照原件过一遍。"))));
   }
 
   function openExternal(url) {
@@ -403,7 +403,7 @@
           h("b", null, t("云端识别")),
           h("span", null, t("填一个 mineru.net 的 API Key，不用下模型、不占算力。文件会上传，每天 1000 页额度。")))),
       h("div", { className: "drop-hint rise tight" },
-        t("转换完的 Word 旁会附一份复核报告，列出识别到的公式——请对照原件过一遍再用。")));
+        t("转换完的 Word 旁会附一份复核报告，列出无法自动确认的内容——请对照原件过一遍再用。")));
   }
 
   Object.assign(window, {
