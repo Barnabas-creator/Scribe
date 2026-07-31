@@ -120,5 +120,12 @@ if [ -n "$STRAY" ]; then
 fi
 echo "  依赖自检通过（在 DMG 内校验）：只用系统库"
 
+# English installer filename (GitHub strips non-ASCII from release asset names,
+# which turned "抄录_0.1.0_aarch64.dmg" into "_0.1.0_aarch64.dmg"). The app
+# inside stays 抄录.app.
+EN_DMG="$(dirname "$DMG")/Scribe_$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['package']['version'])")_aarch64.dmg"
+mv "$DMG" "$EN_DMG"
+echo "  安装包: $EN_DMG"
+
 echo "✅ 打包完成：${APP} ($(du -sh "$APP" | cut -f1))"
 echo "   未签名，别人打开会被 Gatekeeper 拦——签名与公证见 packaging/DISTRIBUTION.md"

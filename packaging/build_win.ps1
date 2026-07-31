@@ -67,5 +67,9 @@ tauri build --config $cfgFile
 
 $nsis = Get-ChildItem -Path "src-tauri\target\release\bundle\nsis" -Filter *.exe -ErrorAction SilentlyContinue
 if (-not $nsis) { throw "no installer produced; check the build output" }
-Write-Host "OK  $($nsis.FullName)"
+# English installer filename; GitHub strips non-ASCII from release asset names.
+$version = (Get-Content "src-tauri\tauri.conf.json" | ConvertFrom-Json).package.version
+$enName = Join-Path $nsis.DirectoryName "Scribe_${version}_x64-setup.exe"
+Move-Item -Force $nsis.FullName $enName
+Write-Host "OK  $enName"
 Write-Host "Unsigned -- SmartScreen will warn on first launch."
