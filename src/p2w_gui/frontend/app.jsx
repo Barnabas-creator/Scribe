@@ -81,10 +81,26 @@
     const changeAutoOpen = (v) => { localStorage.setItem("pdfw_auto_open", v ? "1" : "0"); setAutoOpen(v); };
 
     // ---------- Engine / API key ----------
+    // Retry until the backend answers: Tauri spawns the Python backend at app
+    // launch and it takes a moment to start listening. A one-shot fetch here
+    // silently failed and left the UI showing the defaults (local engine, no
+    // key) no matter what the user had saved.
     useEffect(() => {
-      get("/settings").then((r) => { if (r && r.engine) setCfg(r); }).catch(() => {});
+      let stopped = false;
+      (async () => {
+        for (let i = 0; i < 60 && !stopped; i++) {
+          try {
+            const r = await get("/settings");
+            if (r && r.engine) { if (!stopped) setCfg(r); return; }
+          } catch (e) { /* backend not up yet */ }
+          await new Promise((res) => setTimeout(res, 1000));
+        }
+      })();
+      return () => { stopped = true; };
     }, []);
 
+    // Returns the fresh settings from the server, or null on failure, so
+    // callers can act on server truth instead of stale component state.
     const pushCfg = async (body, okMsg) => {
       setKeyState(null);
       try {
@@ -93,19 +109,22 @@
         // and storing that would blank the window on the next render.
         if (!r || r.ok === false || !r.settings || !r.settings.engine) {
           say((r && r.why) || t("设置没保存上（后端版本不符？）"), "err");
-          return;
+          return null;
         }
         setCfg(r.settings);
         if (okMsg) say(okMsg);
-      } catch (e) { say(t("设置没保存上"), "err"); }
+        return r.settings;
+      } catch (e) { say(t("设置没保存上"), "err"); return null; }
     };
     const changeEngine = (v) =>
       pushCfg({ engine: v }, v === "cloud" ? t("已切换到云端识别") : t("已切换到本机识别"));
     // Toggle applies immediately; a missing key or model opens Settings.
     const switchEngine = async (v) => {
       if (v === cfg.engine) return;
-      await changeEngine(v);
-      if (v === "cloud" && !cfg.hasToken) {
+      // Judge by the response, not by component state: right after launch the
+      // state may still hold defaults while the server already has a saved key.
+      const fresh = await changeEngine(v);
+      if (v === "cloud" && fresh && !fresh.hasToken) {
         setShowSettings(true); say(t("云端识别要先填 API Key"), "err");
       } else if (v === "local") {
         try {

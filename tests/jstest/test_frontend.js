@@ -12,7 +12,15 @@ win.localStorage.setItem("pdfw_gate_done", "1"); // skip first-run, test the mai
 
 const calls = { fetch: [], dialog: [], win: [], shell: [] };
 let pollPhase = "idle"; // drives the /poll mock
-win.fetch = (url, opts) => { calls.fetch.push({ url, body: opts && opts.body ? JSON.parse(opts.body) : null }); return Promise.resolve({ json: () => Promise.resolve(mockResp(url)) }); };
+let settingsFailures = 1;   // first /settings fetch fails, as at real app launch
+win.fetch = (url, opts) => {
+  calls.fetch.push({ url, body: opts && opts.body ? JSON.parse(opts.body) : null });
+  if (url.endsWith("/settings") && !opts && settingsFailures > 0) {
+    settingsFailures--;
+    return Promise.reject(new Error("ECONNREFUSED"));
+  }
+  return Promise.resolve({ json: () => Promise.resolve(mockResp(url)) });
+};
 win.__TAURI__ = {
   dialog: { open: (o) => { calls.dialog.push(o || {}); return Promise.resolve(o && o.directory ? "/picked/folder" : ["/picked/a.pdf", "/picked/b.png"]); } },
   window: { appWindow: { close() { calls.win.push("close"); }, minimize() { calls.win.push("minimize"); }, toggleMaximize() { calls.win.push("toggleMaximize"); } } },
@@ -36,7 +44,7 @@ function mockResp(url) {
   if (url.endsWith("/settings")) return Object.assign({ ok: true, settings: cfgResp }, cfgResp);
   return { ok: true };
 }
-let cfgResp = { engine: "local", hasToken: false, tokenHint: "", localAvailable: true, export: "docx" };
+let cfgResp = { engine: "cloud", hasToken: true, tokenHint: "sk-t…6789", localAvailable: true, export: "docx" };
 let modelResp = { ready: true, downloading: false, percent: 100, error: "" };
 
 // Loaded exactly as Tauri does: vendor React plus the precompiled bundle.
@@ -63,6 +71,21 @@ function segBtn(txt) {
 (async () => {
   await sleep(150);
   ck("渲染非空", doc.getElementById("root").children.length > 0);
+
+  // Regression: the backend needs a moment to start listening. The first
+  // /settings fetch fails; the loader must retry until it succeeds, so a saved
+  // cloud config shows up instead of the local default.
+  // (settingsFailures=1 and a saved cloud config are set before the bundle
+  //  loads; wait past the loader's 1s retry)
+  await sleep(1300);
+  ck("后端慢启动→重试后显示已存的云端设置",
+    doc.querySelector(".seg-engine button.on").textContent === "云端识别");
+  ck("已存 Key→切换时不弹「要先填 API Key」", !doc.body.textContent.includes("云端识别要先填 API Key"));
+  cfgResp = { engine: "local", hasToken: false, tokenHint: "", localAvailable: true, export: "docx" };
+  click([...doc.querySelectorAll(".seg-engine button")].find((b) => b.textContent === "本机识别"));
+  await sleep(250);
+  doc.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  await sleep(100);
   ck("空状态投递区文案", doc.body.textContent.includes("把 PDF 拖进来"));
   ck("使用原生窗口交通灯", doc.querySelectorAll(".light").length === 0);
   ck("设置按钮存在", !!doc.querySelector('.icon-btn[title="设置"]'));
