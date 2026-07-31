@@ -116,21 +116,19 @@
         return r.settings;
       } catch (e) { say(t("设置没保存上"), "err"); return null; }
     };
-    const changeEngine = (v) =>
-      pushCfg({ engine: v }, v === "cloud" ? t("已切换到云端识别") : t("已切换到本机识别"));
-    // Toggle applies immediately; a missing key or model opens Settings.
-    const switchEngine = async (v) => {
-      if (v === cfg.engine) return;
-      // Judge by the response, not by component state: right after launch the
-      // state may still hold defaults while the server already has a saved key.
-      const fresh = await changeEngine(v);
+    // Switching happens inside Settings. Follow-up hints judge by the server
+    // response, not component state -- right after launch the state may still
+    // hold defaults while the server already has a saved key.
+    const changeEngine = async (v) => {
+      const fresh = await pushCfg(
+        { engine: v }, v === "cloud" ? t("已切换到云端识别") : t("已切换到本机识别"));
       if (v === "cloud" && fresh && !fresh.hasToken) {
-        setShowSettings(true); say(t("云端识别要先填 API Key"), "err");
-      } else if (v === "local") {
+        say(t("云端识别要先填 API Key"), "err");
+      } else if (v === "local" && fresh) {
         try {
           const m = await get("/model/status");
-          if (m && m.ready === false) { setShowSettings(true); say(t("本机识别要先下载模型"), "err"); }
-        } catch (e) { /* 后端没起来的话转换时自会报错 */ }
+          if (m && m.ready === false) say(t("本机识别要先下载模型"), "err");
+        } catch (e) { /* backend hiccup: conversion will surface it */ }
       }
     };
 
@@ -368,17 +366,17 @@
         has && !running && h("button", { className: "link", title: t("移除全部文件"), onClick: clearAll }, t("清空列表")),
         h("button", { className: "icon-btn", title: t("设置"), onClick: () => setShowSettings(true) }, h(Gear))),
 
-      // Engine toggle on its own row. Whether files get uploaded is a privacy
-      // matter, so it stays permanently visible rather than buried in Settings.
+      // Mode indicator only -- switching lives in Settings. It stays visible
+      // because whether files get uploaded is a privacy matter; clicking it
+      // opens Settings where the actual switch is.
       h("div", { className: "engine-bar" },
-        h("div", { className: "seg seg-engine", role: "radiogroup", "aria-label": "识别方式" },
-          [["local", "本机识别"], ["cloud", "云端识别"]].map(([v, label]) =>
-            h("button", {
-              key: v,
-              className: cfg.engine === v ? "on" : "",
-              disabled: v === "local" && cfg.localAvailable === false,
-              onClick: () => switchEngine(v),
-            }, t(label))))),
+        h("button", {
+          className: "engine-badge " + (cfg.engine === "cloud" ? "cloud" : "local"),
+          title: t("识别方式在设置中切换"),
+          onClick: () => setShowSettings(true),
+        },
+          h("span", { className: "engine-dot" }),
+          cfg.engine === "cloud" ? t("云端识别") : t("本机识别"))),
 
       // Body: drop zone when empty, file list otherwise.
       h("div", { className: "body" },

@@ -78,38 +78,28 @@ function segBtn(txt) {
   // (settingsFailures=1 and a saved cloud config are set before the bundle
   //  loads; wait past the loader's 1s retry)
   await sleep(1300);
-  ck("后端慢启动→重试后显示已存的云端设置",
-    doc.querySelector(".seg-engine button.on").textContent === "云端识别");
-  ck("已存 Key→切换时不弹「要先填 API Key」", !doc.body.textContent.includes("云端识别要先填 API Key"));
+  ck("后端慢启动→重试后徽章显示已存的云端模式",
+    doc.querySelector(".engine-badge").textContent === "云端识别");
+  ck("已存 Key→不弹「要先填 API Key」", !doc.body.textContent.includes("云端识别要先填 API Key"));
+  // 徽章只显示模式：点它打开设置，不直接切换
+  const engPosts = () => calls.fetch.filter((c) => c.body && c.body.engine).length;
+  const beforeBadge = engPosts();
+  click(doc.querySelector(".engine-badge"));
+  await sleep(200);
+  ck("点徽章→打开设置而非切换", !!doc.querySelector(".sheet") && engPosts() === beforeBadge);
+  // 在设置里切回本机（正规入口），供后面的用例使用
   cfgResp = { engine: "local", hasToken: false, tokenHint: "", localAvailable: true, export: "docx" };
-  click([...doc.querySelectorAll(".seg-engine button")].find((b) => b.textContent === "本机识别"));
+  click(segBtn("本机识别"));
   await sleep(250);
   doc.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
   await sleep(100);
   ck("空状态投递区文案", doc.body.textContent.includes("把 PDF 拖进来"));
   ck("使用原生窗口交通灯", doc.querySelectorAll(".light").length === 0);
   ck("设置按钮存在", !!doc.querySelector('.icon-btn[title="设置"]'));
-  ck("主页有识别方式开关且选中本机", (() => {
-    const on = doc.querySelector(".seg-engine button.on");
-    return on && on.textContent === "本机识别";
+  ck("主页徽章显示当前模式（本机）", (() => {
+    const b = doc.querySelector(".engine-badge");
+    return b && b.textContent === "本机识别" && b.className.includes("local");
   })());
-  // Toggling from the main screen: posts immediately, updates selection,
-  // and opens Settings when the key is missing
-  cfgResp = { engine: "cloud", hasToken: false, tokenHint: "", localAvailable: true };
-  click([...doc.querySelectorAll(".seg-engine button")].find((b) => b.textContent === "云端识别"));
-  await sleep(250);
-  ck("主页切云端→POST /settings", calls.fetch.some((c) =>
-    c.url.endsWith("/settings") && c.body && c.body.engine === "cloud"));
-  ck("主页切云端→开关选中态变更", doc.querySelector(".seg-engine button.on").textContent === "云端识别");
-  ck("主页切云端→有切换确认", doc.body.textContent.includes("已切换到云端识别")
-    || doc.body.textContent.includes("云端识别要先填 API Key"));
-  ck("缺 Key→设置面板自动打开", !!doc.querySelector(".sheet"));
-  doc.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
-  cfgResp = { engine: "local", hasToken: false, tokenHint: "", localAvailable: true };
-  click([...doc.querySelectorAll(".seg-engine button")].find((b) => b.textContent === "本机识别"));
-  await sleep(250);
-  doc.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
-  await sleep(100);
 
   // Blank space is inert; only the tray glyph opens a dialog
   click(doc.querySelector(".drop"));
@@ -187,8 +177,10 @@ function segBtn(txt) {
   await sleep(120);
   ck("切云端→POST /settings 带 engine", calls.fetch.some((c) =>
     c.url.endsWith("/settings") && c.body && c.body.engine === "cloud"));
-  ck("切云端→主页开关同步", doc.querySelector(".seg-engine button.on").textContent === "云端识别");
-  ck("设置里切换→有即时生效的确认", doc.body.textContent.includes("已切换到云端识别"));
+  ck("切云端→主页徽章同步", doc.querySelector(".engine-badge").textContent === "云端识别");
+  // 无 Key 时确认吐司会被"要先填 API Key"的提醒接管——两者都算即时反馈
+  ck("设置里切换→有即时反馈", doc.body.textContent.includes("已切换到云端识别")
+    || doc.body.textContent.includes("云端识别要先填 API Key"));
   ck("云端→出现 API Key 输入框", !!doc.querySelector(".key-input"));
   ck("云端→有申请入口", !!findByText("去 mineru.net 申请 →", "button"));
   ck("云端→明确告知文件会上传", doc.querySelector(".sheet").textContent.includes("上传到 mineru.net"));

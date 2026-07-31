@@ -41,6 +41,7 @@
     "文件会上传到 mineru.net 识别": "Files are uploaded to mineru.net",
     "模型在本机运行，文件不上传": "Runs on-device; files never leave this Mac",
     "本机识别": "Local",
+    "识别方式在设置中切换": "Switch recognition mode in Settings",
     "云端识别": "Cloud",
     "这个版本未包含本地模型": "This build has no local model",
     "识别模型": "Model",
