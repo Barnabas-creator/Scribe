@@ -80,6 +80,7 @@ function segBtn(txt) {
   await sleep(1300);
   ck("后端慢启动→重试后徽章显示已存的云端模式",
     doc.querySelector(".engine-badge").textContent === "云端识别");
+  ck("云端已存 Key→徽章点亮", !doc.querySelector(".engine-badge").className.includes("off"));
   ck("已存 Key→不弹「要先填 API Key」", !doc.body.textContent.includes("云端识别要先填 API Key"));
   // 徽章只显示模式：点它打开设置，不直接切换
   const engPosts = () => calls.fetch.filter((c) => c.body && c.body.engine).length;
@@ -157,6 +158,7 @@ function segBtn(txt) {
   modelResp = { ready: false, downloading: false, percent: 0, error: "" };
   await sleep(4300);                       // wait for the 4s settings poll
   ck("模型未下载→出现下载按钮", !!findByText("下载模型", "button"));
+  ck("本机缺模型→徽章灰显", doc.querySelector(".engine-badge").className.includes("off"));
   ck("模型未下载→写明体积", doc.querySelector(".sheet").textContent.includes("2.2 GB"));
   modelResp = { ready: false, downloading: true, percent: 37, error: "" };
   click(findByText("下载模型", "button"));
@@ -182,6 +184,7 @@ function segBtn(txt) {
   ck("设置里切换→有即时反馈", doc.body.textContent.includes("已切换到云端识别")
     || doc.body.textContent.includes("云端识别要先填 API Key"));
   ck("云端→出现 API Key 输入框", !!doc.querySelector(".key-input"));
+  ck("云端缺 Key→徽章灰显", doc.querySelector(".engine-badge").className.includes("off"));
   ck("云端→有申请入口", !!findByText("去 mineru.net 申请 →", "button"));
   ck("云端→明确告知文件会上传", doc.querySelector(".sheet").textContent.includes("上传到 mineru.net"));
   ck("云端→提示每日额度与 Key 有效期", (() => {

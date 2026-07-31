@@ -148,6 +148,9 @@ kbd {
   background: var(--ok);
   box-shadow: 0 0 5px color-mix(in srgb, var(--ok) 60%, transparent);
 }
+/* Not ready (cloud without a key / local without the model): grey it out. */
+.engine-badge.off { color: var(--ink-3); }
+.engine-badge.off .engine-dot { background: var(--ink-3); box-shadow: none; }
 .title-spacer { flex: 1; }
 
 /* Body: the only content area. */

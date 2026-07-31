@@ -91,7 +91,14 @@
         for (let i = 0; i < 60 && !stopped; i++) {
           try {
             const r = await get("/settings");
-            if (r && r.engine) { if (!stopped) setCfg(r); return; }
+            if (r && r.engine) {
+              if (!stopped) {
+                setCfg(r);
+                // The badge needs model readiness even before Settings opens.
+                syncModel();
+              }
+              return;
+            }
           } catch (e) { /* backend not up yet */ }
           await new Promise((res) => setTimeout(res, 1000));
         }
@@ -370,13 +377,20 @@
       // because whether files get uploaded is a privacy matter; clicking it
       // opens Settings where the actual switch is.
       h("div", { className: "engine-bar" },
-        h("button", {
-          className: "engine-badge " + (cfg.engine === "cloud" ? "cloud" : "local"),
-          title: t("识别方式在设置中切换"),
-          onClick: () => setShowSettings(true),
-        },
-          h("span", { className: "engine-dot" }),
-          cfg.engine === "cloud" ? t("云端识别") : t("本机识别"))),
+        (() => {
+          // Lit only when the active mode can actually convert: cloud needs a
+          // saved key, local needs the downloaded model.
+          const ready = cfg.engine === "cloud" ? cfg.hasToken : model.ready !== false;
+          return h("button", {
+            className: "engine-badge " + (cfg.engine === "cloud" ? "cloud" : "local")
+              + (ready ? "" : " off"),
+            title: ready ? t("识别方式在设置中切换")
+              : (cfg.engine === "cloud" ? t("云端识别要先填 API Key") : t("本机识别要先下载模型")),
+            onClick: () => setShowSettings(true),
+          },
+            h("span", { className: "engine-dot" }),
+            cfg.engine === "cloud" ? t("云端识别") : t("本机识别"));
+        })()),
 
       // Body: drop zone when empty, file list otherwise.
       h("div", { className: "body" },
