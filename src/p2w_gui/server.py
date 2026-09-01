@@ -49,7 +49,20 @@ _MID_STATUSES = ("queued", "ocr", "parse", "gen", "pending")
 # elapsed time over expected time. Expected time uses seconds-per-page measured
 # from files already converted this session, per engine: cloud runs on remote
 # GPUs and is an order of magnitude faster, so the two must never share a value.
-_DEFAULT_SPP = {"local": 75.0, "cloud": 6.0}
+_DEFAULT_SPP = {"local": 75.0, "cloud": 0.55}
+# Cloud recognition is not per-page work: the file is uploaded, queued, and
+# processed as a batch server-side, so most of the wall time is fixed cost.
+# Measured against mineru.net (2026-09, one 258-page book sliced down):
+# 1 page 23s, 5 pages 62s, 20 pages 59s, 258 pages 164s. No per-page rate fits
+# that. The old flat 6 s/page was four times short on a single page and ten
+# times long on a book -- which is how a 90-second job announced 25 minutes and
+# then appeared to hang, since the bar is driven by the same estimate.
+_CLOUD_OVERHEAD = 25.0
+# The text-layer path never runs the model -- it is two to three orders of
+# magnitude cheaper. Estimating it at the OCR rate told the user "25 minutes"
+# for a 258-page book that finished in 90 seconds, and since the estimate is
+# just a countdown the bar looked frozen the whole time.
+_TEXT_LAYER_SPP = 0.05
 
 
 def _human_size(n: float) -> str:
@@ -82,6 +95,7 @@ class ConvertManager:
         self._durations: list[float] = []   # per-file wall time, for ETA
         self._cur_started: float | None = None
         self._cur_pages = 1                  # page count of the current file
+        self._cur_fast = False               # current file took the text-layer path
         self._engine = "local"               # engine used by this batch
         self._speed: dict[str, list] = {}    # engine -> [total secs, total pages]
 
@@ -221,10 +235,19 @@ class ConvertManager:
                 with self._lock:
                     self._cur_started = started
                     self._cur_pages = max(1, rec["pages"])
+                    self._cur_fast = False
 
                 def _on_phase(phase: str, rec=rec) -> None:
                     # "ocr:3/9" is real page progress from parallel mode;
                     # _real_prog stops the time-based estimate from overriding it.
+                    # The pipeline only reports "text" once it has committed to
+                    # the fast path, which is the moment the estimate can drop.
+                    if phase == "text":
+                        with self._lock:
+                            rec["_fast"] = True
+                            self._cur_fast = True
+                            rec["status"], rec["progress"] = "ocr", 60
+                        return
                     if phase.startswith("ocr:"):
                         try:
                             d, t = phase[4:].split("/")
@@ -292,13 +315,29 @@ class ConvertManager:
             self._running = False
             self._cancel = False
 
-    def _per_page(self) -> float:
+    def _per_page(self, fast: bool = False) -> float:
         """Measured seconds per page for the current engine, falling back to that
-        engine's default. Local and cloud differ by an order of magnitude."""
+        engine's default. Local and cloud differ by an order of magnitude, and a
+        file on the text-layer path costs neither."""
+        if fast:
+            return _TEXT_LAYER_SPP
         got = self._speed.get(self._engine)
         if got and got[1] > 0:
             return got[0] / got[1]
         return _DEFAULT_SPP.get(self._engine, 75.0)
+
+    def _file_estimate(self, pages: int, fast: bool = False) -> float:
+        """Expected seconds for one whole file, not just its per-page cost.
+
+        A rate measured this session already has the fixed cost amortised into
+        it, so the overhead term applies only to the untuned default.
+        """
+        pages = max(1, pages)
+        measured = self._speed.get(self._engine, [0.0, 0])[1] > 0
+        if fast or measured:
+            return pages * self._per_page(fast)
+        overhead = _CLOUD_OVERHEAD if self._engine == "cloud" else 0.0
+        return overhead + pages * self._per_page()
 
     def _live_progress(self, rec: dict) -> int:
         """Time-based progress for the ocr stage: monotonic and capped at 81, so
@@ -309,7 +348,7 @@ class ConvertManager:
         if rec.get("_real_prog"):      # real page progress available; do not override
             return rec["progress"]
         import time as _t
-        est = max(1, rec["pages"]) * self._per_page()
+        est = self._file_estimate(rec["pages"], rec.get("_fast", False))
         frac = min((_t.monotonic() - self._cur_started) / est, 1.0)
         return max(rec["progress"], min(81, int(10 + 71 * frac)))
 
@@ -317,12 +356,11 @@ class ConvertManager:
         """Seconds remaining, from pages times measured seconds-per-page. Available
         during the first file and self-correcting as more finish."""
         import time as _t
-        pp = self._per_page()
-        waiting = sum(max(1, r["pages"]) for r in self._files.values()
-                      if r["status"] in ("queued", "pending"))
-        left = pp * waiting
+        left = sum(self._file_estimate(r["pages"]) for r in self._files.values()
+                   if r["status"] in ("queued", "pending"))
         if self._cur_started is not None:          # remainder of the current file
-            left += max(0.0, pp * self._cur_pages - (_t.monotonic() - self._cur_started))
+            left += max(0.0, self._file_estimate(self._cur_pages, self._cur_fast)
+                        - (_t.monotonic() - self._cur_started))
         return int(left) if left > 1 else None
 
     def poll(self) -> dict:
@@ -597,35 +635,82 @@ def check_token(req: SettingsReq):
     return {"ok": ok, "why": why}
 
 
-def _bind_stdio() -> None:
-    """Give the process real stdout/stderr before uvicorn configures logging.
+_LOG_HANDLER: list = []
 
-    Windows gives a child of a GUI subsystem process no console, so Python sets
-    sys.stdout and sys.stderr to None. uvicorn's log formatter calls
-    sys.stdout.isatty() while building its config, so the backend died on every
-    packaged Windows launch before it ever bound the port -- the UI just showed
-    a dead connection. Point the missing streams at a log file (truncated per
-    run) so a crash leaves a trace, and fall back to devnull if even that fails.
-    """
-    if sys.stdout is not None and sys.stderr is not None:
-        return
+
+def _open_log():
+    """The log file, or devnull if it cannot be opened. Truncated each run."""
     try:
         path = settings.log_file()
         path.parent.mkdir(parents=True, exist_ok=True)
-        stream = open(path, "w", encoding="utf-8", buffering=1)
+        return open(path, "w", encoding="utf-8", buffering=1)
     except OSError:
-        stream = open(os.devnull, "w")
+        return open(os.devnull, "w")
+
+
+def _install_logging():
+    """Make the backend's death observable, whatever kills it.
+
+    The desktop shell discards the child's output, and on Windows it is a GUI
+    subsystem process that hands the child no console at all -- so Python sets
+    sys.stdout and sys.stderr to None. Two things follow. uvicorn's formatter
+    calls sys.stdout.isatty() while building its config, which killed the
+    backend before it ever bound the port; and when anything later goes wrong
+    mid-conversion the traceback has nowhere to go, leaving the UI frozen on a
+    stale progress estimate with nothing to look at afterwards.
+
+    So: stand in for missing streams, mirror every log record to the file, and
+    route interpreter-level failures (uncaught exceptions on any thread, fatal
+    signals, a normal exit) there too.
+    """
+    import atexit
+    import faulthandler
+    import logging
+    import threading
+    import traceback
+
+    stream = _open_log()
     if sys.stdout is None:
         sys.stdout = stream
     if sys.stderr is None:
         sys.stderr = stream
 
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root = logging.getLogger()
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+    _LOG_HANDLER.append(handler)
+
+    # A native crash (segfault, an extension aborting) never reaches Python's
+    # excepthook, so faulthandler is the only way it leaves a trace.
+    faulthandler.enable(file=stream)
+
+    def on_exc(exc_type, exc, tb):
+        stream.write("UNCAUGHT:\n" + "".join(traceback.format_exception(exc_type, exc, tb)))
+    sys.excepthook = on_exc
+    threading.excepthook = lambda a: stream.write(
+        "UNCAUGHT (thread %s):\n" % a.thread.name
+        + "".join(traceback.format_exception(a.exc_type, a.exc_value, a.exc_traceback)))
+    atexit.register(lambda: stream.write("=== backend exiting normally ===\n"))
+
 
 def main():
+    import logging
     import uvicorn
-    _bind_stdio()
+
+    _install_logging()
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8756
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+    # info, not warning: the access log is what shows how far a stuck
+    # conversion actually got.
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="info")
+    # Configuring uvicorn replaces its loggers and sets propagate=False on them,
+    # so the root handler installed above never sees a single request. Attach it
+    # to uvicorn's own loggers once its dictConfig has run.
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        for h in _LOG_HANDLER:
+            logging.getLogger(name).addHandler(h)
+    uvicorn.Server(config).run()
 
 
 if __name__ == "__main__":
