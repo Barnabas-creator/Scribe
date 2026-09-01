@@ -104,6 +104,19 @@ class ConvertManager:
         self._files[self._id] = rec
         return rec
 
+    def skip_reason(self, path: str) -> str:
+        """Why add() refused a path. add() only returns None, so a drop that is
+        rejected -- most often because the file is already listed -- would look
+        to the user exactly like a drop that did nothing at all."""
+        p = Path(path)
+        if not p.is_file():
+            return "missing"
+        if not is_supported(p):
+            return "unsupported"
+        if any(r["path"] == str(p) for r in self._files.values()):
+            return "duplicate"
+        return "unknown"
+
     def add_folder(self, folder: str) -> list[dict]:
         out = []
         for f in sorted(Path(folder).rglob("*")):
@@ -389,7 +402,19 @@ def ping():
 
 @app.post("/add")
 def add(req: AddReq):
-    return {"files": [mgr.public(r) for p in req.paths if (r := mgr.add(p))]}
+    """Accepted files, plus why each rejected path was skipped.
+
+    `skipped` is what lets the UI say something when a drop adds nothing; the
+    `files` shape is unchanged for older callers.
+    """
+    files, skipped = [], []
+    for path in req.paths:
+        rec = mgr.add(path)
+        if rec:
+            files.append(mgr.public(rec))
+        else:
+            skipped.append({"name": Path(path).name, "why": mgr.skip_reason(path)})
+    return {"files": files, "skipped": skipped}
 
 
 @app.post("/add_folder")
