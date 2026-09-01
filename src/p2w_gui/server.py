@@ -10,6 +10,7 @@ Run:  python -m p2w_gui.server [port]   (default 8756)
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import subprocess
@@ -23,6 +24,7 @@ from p2w.config import ConvertOptions
 from p2w_gui import settings
 from p2w.normalize import is_pdf, is_supported
 from p2w.pipeline import convert_file
+from p2w.winpath import make_dirs
 
 _REASON_HINT = {
     "formula_check": "识别的公式，已转为 Word 原生公式，请对照原卷核对。",
@@ -225,8 +227,7 @@ class ConvertManager:
                         return
                     with self._lock:
                         rec["status"], rec["progress"] = st
-                output_dir = self._resolve_output_dir(rec, co, opts)
-                output_dir.mkdir(parents=True, exist_ok=True)
+                output_dir = make_dirs(self._resolve_output_dir(rec, co, opts))
                 with self._lock:
                     rec["output_dir"] = str(output_dir)
                     self._last_output_dir = str(output_dir)
@@ -571,8 +572,33 @@ def check_token(req: SettingsReq):
     return {"ok": ok, "why": why}
 
 
+def _bind_stdio() -> None:
+    """Give the process real stdout/stderr before uvicorn configures logging.
+
+    Windows gives a child of a GUI subsystem process no console, so Python sets
+    sys.stdout and sys.stderr to None. uvicorn's log formatter calls
+    sys.stdout.isatty() while building its config, so the backend died on every
+    packaged Windows launch before it ever bound the port -- the UI just showed
+    a dead connection. Point the missing streams at a log file (truncated per
+    run) so a crash leaves a trace, and fall back to devnull if even that fails.
+    """
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    try:
+        path = settings.log_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        stream = open(path, "w", encoding="utf-8", buffering=1)
+    except OSError:
+        stream = open(os.devnull, "w")
+    if sys.stdout is None:
+        sys.stdout = stream
+    if sys.stderr is None:
+        sys.stderr = stream
+
+
 def main():
     import uvicorn
+    _bind_stdio()
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8756
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
 
