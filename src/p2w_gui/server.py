@@ -657,11 +657,16 @@ def _install_logging():
     calls sys.stdout.isatty() while building its config, which killed the
     backend before it ever bound the port; and when anything later goes wrong
     mid-conversion the traceback has nowhere to go, leaving the UI frozen on a
-    stale progress estimate with nothing to look at afterwards.
+    stale estimate with nothing to look at afterwards.
 
-    So: stand in for missing streams, mirror every log record to the file, and
-    route interpreter-level failures (uncaught exceptions on any thread, fatal
-    signals, a normal exit) there too.
+    Headless, the log file simply becomes the missing stream and uvicorn's own
+    handlers write into it. With a real console -- development, `python -m
+    p2w_gui.server` -- uvicorn keeps the terminal and a file handler mirrors
+    the same records, so both cases end up with the same file. Adding that
+    handler in the headless case too would write every line twice.
+
+    Either way, interpreter-level failures (uncaught exceptions on any thread,
+    fatal signals, a normal exit) are routed to the file as well.
     """
     import atexit
     import faulthandler
@@ -670,17 +675,20 @@ def _install_logging():
     import traceback
 
     stream = _open_log()
+    headless = sys.stdout is None or sys.stderr is None
     if sys.stdout is None:
         sys.stdout = stream
     if sys.stderr is None:
         sys.stderr = stream
 
-    handler = logging.StreamHandler(stream)
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
-    root = logging.getLogger()
-    root.addHandler(handler)
-    root.setLevel(logging.INFO)
-    _LOG_HANDLER.append(handler)
+    if not headless:
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        root = logging.getLogger()
+        root.addHandler(handler)
+        root.setLevel(logging.INFO)
+        _LOG_HANDLER.append(handler)
 
     # A native crash (segfault, an extension aborting) never reaches Python's
     # excepthook, so faulthandler is the only way it leaves a trace.
@@ -704,12 +712,17 @@ def main():
     # info, not warning: the access log is what shows how far a stuck
     # conversion actually got.
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="info")
-    # Configuring uvicorn replaces its loggers and sets propagate=False on them,
-    # so the root handler installed above never sees a single request. Attach it
-    # to uvicorn's own loggers once its dictConfig has run.
+    # Configuring uvicorn replaces its loggers and sets propagate=False on
+    # uvicorn.access, so a root handler alone never sees a single request.
+    # Attach the mirror to whichever of them cannot reach root on their own;
+    # _LOG_HANDLER is empty in the headless case, where the file already is
+    # uvicorn's own output stream.
     for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        logger = logging.getLogger(name)
+        if logger.propagate:
+            continue
         for h in _LOG_HANDLER:
-            logging.getLogger(name).addHandler(h)
+            logger.addHandler(h)
     uvicorn.Server(config).run()
 
 
