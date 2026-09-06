@@ -63,9 +63,12 @@ class OCRBackendError(RuntimeError):
     """Recognition failed. `detail` keeps the raw engine output for the error
     log; str(exc) is the human-readable line shown in the UI."""
 
-    def __init__(self, message: str, detail: str = ""):
+    def __init__(self, message: str, detail: str = "", transient: bool = False):
         super().__init__(message)
         self.detail = detail
+        # transient means "the network, not the request": worth retrying rather
+        # than failing a file that the remote side is still working on.
+        self.transient = transient
 
 
 def find_mineru() -> str | None:
@@ -191,7 +194,8 @@ class MineruServer:
 
 def run_mineru(input_path: str | Path, output_dir: str | Path,
                opts: ConvertOptions | None = None,
-               should_cancel: Callable[[], bool] | None = None) -> tuple[Path, Path]:
+               should_cancel: Callable[[], bool] | None = None,
+               on_phase: Callable[[str], None] | None = None) -> tuple[Path, Path]:
     """Recognize one file (PDF or image); returns (content_list.json, image dir).
 
     should_cancel() returning True kills the subprocess immediately.
@@ -205,7 +209,7 @@ def run_mineru(input_path: str | Path, output_dir: str | Path,
         # Routing lives here rather than in callers: the hybrid path, parallel
         # split and batch conversion all funnel through this function.
         from .mineru_cloud import run_cloud
-        return run_cloud(input_path, output_dir, opts, should_cancel)
+        return run_cloud(input_path, output_dir, opts, should_cancel, on_phase)
 
     base = mineru_cmd()
     if not base:

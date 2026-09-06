@@ -87,7 +87,7 @@ class ConvertManager:
     def __init__(self):
         self._files: dict[int, dict] = {}
         self._id = 0
-        self._output_dir = str(Path.home() / "p2w_output")
+        self._output_dir = str(settings.default_output_dir())
         self._last_output_dir: str | None = None
         self._lock = threading.Lock()
         self._running = False
@@ -114,6 +114,7 @@ class ConvertManager:
             "status": "pending", "progress": 0,
             "reviewNote": None, "errNote": None,
             "review_items": [], "docx": None, "report": None, "output_dir": None,
+            "step": None,
         }
         self._files[self._id] = rec
         return rec
@@ -143,6 +144,7 @@ class ConvertManager:
     def public(self, rec: dict) -> dict:
         out = {k: rec[k] for k in
                ("id", "name", "type", "pages", "size", "status", "progress", "reviewNote", "errNote")}
+        out["step"] = rec.get("step")   # cloud sub-step, None on the local engine
         # Output type drives the frontend button label (Word vs Markdown).
         out["outExt"] = (rec.get("docx") or "").rsplit(".", 1)[-1] if rec.get("docx") else ""
         return out
@@ -194,12 +196,16 @@ class ConvertManager:
         return True
 
     def _resolve_output_dir(self, rec: dict, co: ConvertOptions, opts: dict) -> Path:
-        if opts.get("outDir") == "custom":
-            return Path(self._output_dir)
         # Name the directory after the source file, so several conversions in
-        # one folder stay distinguishable.
+        # one place stay distinguishable.
         src = Path(rec["path"])
-        return src.parent / f"{src.stem}{co.output_subdir}"
+        sub = f"{src.stem}{co.output_subdir}"
+        where = opts.get("outDir")
+        if where == "custom":       # user picked an exact folder; write into it
+            return Path(self._output_dir)
+        if where == "source":       # beside the source file
+            return src.parent / sub
+        return Path(self._output_dir) / sub
 
     def _run(self, ids, co: ConvertOptions, opts: dict):
         from p2w.mineru_backend import MineruServer
@@ -233,6 +239,7 @@ class ConvertManager:
                 import time as _t
                 started = _t.monotonic()
                 with self._lock:
+                    rec["step"] = None      # stale note from an earlier attempt
                     self._cur_started = started
                     self._cur_pages = max(1, rec["pages"])
                     self._cur_fast = False
@@ -247,6 +254,24 @@ class ConvertManager:
                             rec["_fast"] = True
                             self._cur_fast = True
                             rec["status"], rec["progress"] = "ocr", 60
+                        return
+                    if phase.startswith("cloud:"):
+                        # Cloud work is four long steps with nothing to show in
+                        # between. Report which one is running, and let the
+                        # finished-chunk count drive the bar for real.
+                        step, _, frac = phase[6:].partition(":")
+                        done, _, total = frac.partition("/")
+                        with self._lock:
+                            rec["step"] = {"k": step, "i": int(done or 0),
+                                           "n": int(total or 0)}
+                            if step in ("upload", "wait", "fetch") and total:
+                                # 10-40 upload, 40-75 recognition, 75-81 download
+                                lo, hi = {"upload": (10, 40), "wait": (40, 75),
+                                          "fetch": (75, 81)}[step]
+                                rec["status"] = "ocr"
+                                rec["progress"] = lo + int(
+                                    (hi - lo) * int(done) / max(1, int(total)))
+                                rec["_real_prog"] = True
                         return
                     if phase.startswith("ocr:"):
                         try:
@@ -281,8 +306,10 @@ class ConvertManager:
                     if res.cancelled:
                         rec["status"] = "pending"
                         rec["progress"] = 0
+                        rec["step"] = None
                         continue
                     rec["progress"] = 100
+                    rec["step"] = None
                     if not res.ok:
                         rec["status"] = "error"
                         rec["errNote"] = res.error or "转换失败"
@@ -524,9 +551,23 @@ def file_path(id: int, which: str = "docx"):
 def open_path(req: OpenReq):
     p = Path(req.path)
     if not p.exists():
-        return {"ok": False, "error": f"路径不存在: {req.path}"}
+        # The output folder is only created when something is written to it, so
+        # the button would be dead until the first successful conversion.
+        if p.suffix:
+            return {"ok": False, "error": f"路径不存在: {req.path}"}
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return {"ok": False, "error": str(exc)}
     try:
-        subprocess.Popen(["open", str(p)])
+        if os.name == "nt":
+            # "open" is a macOS command; on Windows it does not exist at all and
+            # Popen fails with WinError 2 instead of opening anything.
+            os.startfile(str(p))    # noqa: S606
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(p)])
+        else:
+            subprocess.Popen(["xdg-open", str(p)])
         return {"ok": True}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
@@ -681,13 +722,19 @@ def _install_logging():
     if sys.stderr is None:
         sys.stderr = stream
 
+    # Root gets a handler in both cases, or the app's own log lines (the cloud
+    # steps, for one) would go nowhere in a packaged build -- there uvicorn
+    # reaches the file through its own stdout handler, not through root.
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root = logging.getLogger()
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
     if not headless:
-        handler = logging.StreamHandler(stream)
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
-        root = logging.getLogger()
-        root.addHandler(handler)
-        root.setLevel(logging.INFO)
+        # Only then is it also the mirror for uvicorn's own loggers; headless
+        # already writes them to this same file via stdout, and attaching it
+        # there would print every request twice.
         _LOG_HANDLER.append(handler)
 
     # A native crash (segfault, an extension aborting) never reaches Python's

@@ -23,6 +23,7 @@ Flow (official v4 batch upload, https://mineru.net/apiManage/docs):
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import time
 import urllib.error
@@ -34,6 +35,8 @@ from typing import Callable
 from .config import ConvertOptions
 from .mineru_backend import Cancelled, OCRBackendError
 
+_log = logging.getLogger(__name__)
+
 _BASE = "https://mineru.net/api/v4"
 APPLY_URL = "https://mineru.net/apiManage/token"     # "get a key" link target
 # Official limits: 200 MB / 200 pages per file. Oversized PDFs are chunked.
@@ -42,19 +45,39 @@ _MAX_PAGES = 200
 # Headroom when sizing chunks by bytes: page sizes vary, so leave slack.
 _SIZE_MARGIN = 0.9
 _POLL_SEC = 3.0
+# Upload retry policy. The PUT to OSS is the least reliable step in the flow.
+_UPLOAD_TRIES = 5
+# Long enough that a machine waking from sleep gets its network back before the
+# last attempt is spent.
+_UPLOAD_BACKOFF_SEC = 10.0
+_UPLOAD_SEC_PER_MB = 20.0
+# How long the batch may stay unreachable before the file is called failed.
+# Waking from sleep needs the network stack a few seconds; a dropped hotel
+# wifi needs longer.
+_OFFLINE_GRACE_SEC = 600
 
 
 def run_cloud(input_path: str | Path, output_dir: str | Path,
               opts: ConvertOptions | None = None,
-              should_cancel: Callable[[], bool] | None = None) -> tuple[Path, Path]:
+              should_cancel: Callable[[], bool] | None = None,
+              on_phase: Callable[[str], None] | None = None) -> tuple[Path, Path]:
     """Send one file to mineru.net; returns (content_list.json, image dir).
 
     Signature-compatible with mineru_backend.run_mineru. Oversized PDFs are
     chunked and reassembled transparently.
+
+    on_phase reports which of the four steps is running. Without it a big file
+    looks frozen: uploading and waiting for the remote GPUs take most of the
+    wall time and neither produces any other sign of life.
     """
     opts = opts or ConvertOptions()
     if not opts.api_token:
         raise OCRBackendError("没有填 API Key，无法使用云端识别")
+
+    def phase(name: str) -> None:
+        _log.info("cloud %s", name)
+        if on_phase:
+            on_phase("cloud:" + name)
 
     src = Path(input_path).resolve()
     out = Path(output_dir).resolve()
@@ -64,24 +87,30 @@ def run_cloud(input_path: str | Path, output_dir: str | Path,
     if not ranges:
         chunks = [(src, 0)]                     # within limits: one chunk
     else:
+        phase("split")
         chunks = _split(src, ranges, out / "_chunks")
 
     names = [c.name for c, _ in chunks]
+    total = len(chunks)
     batch_id, urls = _request_upload(names, opts)
-    for (chunk, _), url in zip(chunks, urls):
+    for i, ((chunk, _), url) in enumerate(zip(chunks, urls), 1):
         if should_cancel and should_cancel():
             raise Cancelled("已停止")
-        _upload(url, chunk)
+        phase(f"upload:{i - 1}/{total}")
+        _upload(url, chunk, should_cancel)
+    phase(f"upload:{total}/{total}")
 
-    zips = _wait(batch_id, names, opts, should_cancel, factor=len(chunks))
-    return _assemble(chunks, [zips[n] for n in names], out)
+    zips = _wait(batch_id, names, opts, should_cancel, factor=total, phase=phase)
+    phase(f"fetch:0/{total}")
+    return _assemble(chunks, [zips[n] for n in names], out, phase)
 
 
 def plan_chunks(src: Path) -> list[tuple[int, int]]:
     """Plan chunking: returns [(first_page, last_page)] inclusive, 0-based, or an
     empty list when the file fits. Images cannot be split and error out instead.
     """
-    mb = src.stat().st_size / 1024 ** 2
+    size = src.stat().st_size
+    mb = size / 1024 ** 2
     if src.suffix.lower() != ".pdf":
         if mb > _MAX_MB:
             raise OCRBackendError(f"图片 {mb:.0f} MB，超过云端上限 {_MAX_MB} MB，请改用本地识别")
@@ -160,9 +189,11 @@ def _call(path: str, opts: ConvertOptions, body: dict | None = None) -> dict:
             payload = json.loads(r.read().decode())
     except urllib.error.HTTPError as e:
         raw = e.read().decode(errors="replace")
-        raise OCRBackendError(_explain_http(e.code, raw), detail=f"{url}\n{e.code}\n{raw}")
-    except urllib.error.URLError as e:
-        raise OCRBackendError(f"连不上 mineru.net（{e.reason}），检查网络或改用本地识别")
+        raise OCRBackendError(_explain_http(e.code, raw), detail=f"{url}\n{e.code}\n{raw}",
+                              transient=e.code >= 500 or e.code == 429)
+    except (urllib.error.URLError, OSError) as e:
+        raise OCRBackendError(f"连不上 mineru.net（{e}），检查网络或改用本地识别",
+                              transient=True)
 
     if payload.get("code") not in (0, 200):
         msg = payload.get("msg") or payload.get("message") or "云端返回了错误"
@@ -195,13 +226,22 @@ def _request_upload(names: list[str], opts: ConvertOptions) -> tuple[str, list[s
     return batch_id, urls
 
 
-def _upload(url: str, src: Path) -> None:
-    """PUT to OSS. The presigned URL does not cover Content-Type, so sending one
-    breaks the signature.
+def _upload(url: str, src: Path,
+            should_cancel: Callable[[], bool] | None = None) -> None:
+    """PUT to OSS, retrying a dropped connection.
 
-    urllib cannot be used: it auto-adds Content-Type on requests with a body,
-    which OSS rejects with 403 SignatureDoesNotMatch. http.client gives full
-    control over the headers.
+    The presigned URL does not cover Content-Type, so sending one breaks the
+    signature. urllib cannot be used: it auto-adds Content-Type on requests with
+    a body, which OSS rejects with 403 SignatureDoesNotMatch. http.client gives
+    full control over the headers.
+
+    A chunk is tens of MB and the link to OSS is often slow and flaky, so the
+    upload is retried and the body is streamed from the file handle rather than
+    handed over as one bytes object -- http.client then writes it in blocks, and
+    a stall trips the socket timeout on the current block instead of after the
+    whole transfer. Retries matter more than anything else here: without them a
+    single dropped connection failed a file that had already been split, paid
+    for and half uploaded.
     """
     import http.client
     from urllib.parse import urlsplit
@@ -209,35 +249,95 @@ def _upload(url: str, src: Path) -> None:
     parts = urlsplit(url)
     path = parts.path + ("?" + parts.query if parts.query else "")
     conn_cls = http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
-    conn = conn_cls(parts.netloc, timeout=600)
-    try:
-        conn.request("PUT", path, body=src.read_bytes(),
-                     headers={"Host": parts.netloc})   # Host plus implicit Content-Length only
-        resp = conn.getresponse()
-        body = resp.read()
-        if resp.status not in (200, 201, 204):
-            raise OCRBackendError(
+    size = src.stat().st_size
+    mb = size / 1024 ** 2
+    # Budget by size, floor 3 min: a 30 MB chunk on a 500 KB/s uplink needs 60s.
+    timeout = max(180.0, mb * _UPLOAD_SEC_PER_MB)
+
+    last: Exception | None = None
+    for attempt in range(_UPLOAD_TRIES):
+        if should_cancel and should_cancel():
+            raise Cancelled("已停止")
+        if attempt:
+            time.sleep(_UPLOAD_BACKOFF_SEC * attempt)
+        conn = conn_cls(parts.netloc, timeout=timeout)
+        try:
+            with src.open("rb") as body:
+                # Content-Length must be explicit: given a file object
+                # http.client cannot size the body itself and falls back to
+                # chunked transfer encoding, which OSS does not accept here.
+                conn.request("PUT", path, body=body, headers={
+                    "Host": parts.netloc,
+                    "Content-Length": str(size),
+                })
+            resp = conn.getresponse()
+            payload = resp.read()
+            if resp.status in (200, 201, 204):
+                return
+            if resp.status < 500:
+                # 403 SignatureDoesNotMatch, expired URL: retrying cannot help.
+                raise OCRBackendError(
+                    "上传到云端失败",
+                    detail=f"PUT {resp.status}\n{payload.decode(errors='replace')[:2000]}")
+            last = OCRBackendError(
                 "上传到云端失败",
-                detail=f"PUT {resp.status}\n{body.decode(errors='replace')[:2000]}")
-    except OSError as e:
-        raise OCRBackendError(f"上传中断（{e}）")
-    finally:
-        conn.close()
+                detail=f"PUT {resp.status}\n{payload.decode(errors='replace')[:2000]}")
+        except OSError as e:
+            last = e
+        finally:
+            conn.close()
+
+    raise OCRBackendError(
+        f"上传中断，重试 {_UPLOAD_TRIES} 次仍失败（{last}）。"
+        f"网络不稳时可稍后重试，或改用本地识别")
 
 
 def _wait(batch_id: str, names: list[str], opts: ConvertOptions,
-          should_cancel: Callable[[], bool] | None, factor: int = 1) -> dict[str, str]:
+          should_cancel: Callable[[], bool] | None, factor: int = 1,
+          phase: Callable[[str], None] | None = None) -> dict[str, str]:
     """Wait for every file in the batch; returns {filename: zip url}."""
-    deadline = time.monotonic() + opts.timeout_sec * max(1, factor)
+    budget = opts.timeout_sec * max(1, factor)
+    deadline = time.monotonic() + budget
     want = set(names)
     got: dict[str, str] = {}
+    seen = -1                      # last reported count, so each step logs once
+    last_tick = time.monotonic()
+    offline_since: float | None = None
     while True:
         if should_cancel and should_cancel():
             raise Cancelled("已停止")
-        if time.monotonic() > deadline:
+
+        # A sleeping laptop must not eat the budget. Any gap far longer than the
+        # poll interval means the process was not running -- suspend, or the
+        # machine bogged down -- so give that time back instead of declaring a
+        # timeout the moment the lid opens.
+        now = time.monotonic()
+        gap = now - last_tick
+        if gap > _POLL_SEC * 10:
+            deadline += gap
+            _log.info("cloud wait: 停了 %.0f 秒（休眠或卡顿），等待上限顺延", gap)
+        last_tick = now
+
+        if now > deadline:
             raise OCRBackendError("云端识别超时，稍后重试或改用本地识别")
 
-        for item in _call(f"/extract-results/batch/{batch_id}", opts).get("extract_result") or []:
+        try:
+            result = _call(f"/extract-results/batch/{batch_id}", opts).get("extract_result") or []
+        except OCRBackendError as exc:
+            # The remote side keeps working while the link is down; failing the
+            # file here would throw away recognition that is already paid for.
+            if not getattr(exc, "transient", False):
+                raise
+            offline_since = offline_since or now
+            if now - offline_since > _OFFLINE_GRACE_SEC:
+                raise OCRBackendError(
+                    f"云端连不上超过 {_OFFLINE_GRACE_SEC // 60} 分钟（{exc}）")
+            _log.info("cloud wait: 查询失败，%s 秒后重试（%s）", _POLL_SEC, exc)
+            time.sleep(_POLL_SEC)
+            continue
+        offline_since = None
+
+        for item in result:
             name = item.get("file_name")
             if name not in want:
                 continue
@@ -251,13 +351,16 @@ def _wait(batch_id: str, names: list[str], opts: ConvertOptions,
                 raise OCRBackendError(
                     f"云端识别失败：{item.get('err_msg') or '未说明原因'}",
                     detail=json.dumps(item, ensure_ascii=False))
+        if phase and len(got) != seen:
+            seen = len(got)
+            phase(f"wait:{seen}/{len(want)}")
         if len(got) == len(want):
             return got
         time.sleep(_POLL_SEC)
 
 
 def _assemble(chunks: list[tuple[Path, int]], zip_urls: list[str],
-              out: Path) -> tuple[Path, Path]:
+              out: Path, phase: Callable[[str], None] | None = None) -> tuple[Path, Path]:
     """Download and unpack each chunk, restore page numbers, merge images."""
     result = out / "result"
     (result / "images").mkdir(parents=True, exist_ok=True)
@@ -266,6 +369,8 @@ def _assemble(chunks: list[tuple[Path, int]], zip_urls: list[str],
     for idx, ((_, start), zip_url) in enumerate(zip(chunks, zip_urls)):
         part = out / f"_zip_{idx:02d}"
         _fetch_zip(zip_url, part)
+        if phase:
+            phase(f"fetch:{idx + 1}/{len(chunks)}")
         hits = sorted(part.rglob("*content_list.json"))
         if not hits:
             listing = [p.name for p in part.rglob("*")][:40]
@@ -293,13 +398,29 @@ def _assemble(chunks: list[tuple[Path, int]], zip_urls: list[str],
 
 
 def _fetch_zip(zip_url: str, dest_dir: Path) -> None:
+    """Download one chunk's result zip, retrying a dropped connection.
+
+    By this point the recognition is done and the quota is spent, so a flaky
+    link must not be what loses it.
+    """
     dest_dir.mkdir(parents=True, exist_ok=True)
     tmp = dest_dir / "r.zip"
-    try:
-        with urllib.request.urlopen(zip_url, timeout=600) as r:
-            tmp.write_bytes(r.read())
-    except (urllib.error.URLError, urllib.error.HTTPError) as e:
-        raise OCRBackendError(f"下载识别结果失败（{e}）")
+    last: Exception | None = None
+    for attempt in range(_UPLOAD_TRIES):
+        if attempt:
+            time.sleep(_UPLOAD_BACKOFF_SEC * attempt)
+        try:
+            with urllib.request.urlopen(zip_url, timeout=600) as r:
+                tmp.write_bytes(r.read())
+            break
+        except urllib.error.HTTPError as e:
+            if e.code < 500:
+                raise OCRBackendError(f"下载识别结果失败（{e}）")
+            last = e
+        except (urllib.error.URLError, OSError) as e:
+            last = e
+    else:
+        raise OCRBackendError(f"下载识别结果失败，重试 {_UPLOAD_TRIES} 次仍不通（{last}）")
     with zipfile.ZipFile(tmp) as z:
         z.extractall(dest_dir)
     tmp.unlink(missing_ok=True)

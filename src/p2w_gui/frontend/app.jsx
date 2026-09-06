@@ -180,7 +180,12 @@
     useEffect(() => { autoOpenRef.current = autoOpen; }, [autoOpen]);
     useEffect(() => {
       if (!running) return;
+      // setRunning(false) only takes effect on the next render, so without a
+      // latch of its own the interval keeps firing and opens one Explorer
+      // window per tick. Ticks also overlap: the poll is awaited.
+      let finished = false;
       const iv = setInterval(async () => {
+        if (finished) return;
         let st;
         try { st = await get("/poll"); } catch (e) { return; }
         // Replace the object only when a field actually changed; Row is
@@ -188,12 +193,21 @@
         setFiles((prev) => prev.map((f) => {
           const r = st.files.find((x) => x.id === f.id);
           if (!r) return f;
-          for (const k in r) if (r[k] !== f[k]) return Object.assign({}, f, r);
+          for (const k in r) {
+            const a = r[k], b = f[k];
+            if (a === b) continue;
+            // step is an object: compare it by value, not by reference
+            if (k === "step" && JSON.stringify(a) === JSON.stringify(b)) continue;
+            return Object.assign({}, f, r);
+          }
           return f;
         }));
         setStopping(!!st.stopping);
         setEta(st.eta);
         if (!st.running) {
+          if (finished) return;
+          finished = true;
+          clearInterval(iv);
           setRunning(false); setStopping(false); setEta(null);
           if (autoOpenRef.current) openOut();
         }
@@ -291,7 +305,7 @@
       const ids = new Set(targets.map((f) => f.id));
       setFiles((fs) => fs.map((f) => (ids.has(f.id) ? Object.assign({}, f, { status: "queued", progress: 5 }) : f)));
       try {
-        const r = await post("/start", { ids: Array.from(ids), opts: { outDir: "same", dup: "rename" } });
+        const r = await post("/start", { ids: Array.from(ids), opts: { outDir: "default", dup: "rename" } });
         if (r && r.ok === false) {
           setFiles(snapshot);
           say(r.why || t("上一批还在转，请稍候"), "err");

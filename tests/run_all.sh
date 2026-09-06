@@ -22,6 +22,8 @@ run "文字层直通的把关" python3 tests/test_textlayer.py
 run "混合路径的涂白与拼装" python3 tests/test_hybrid.py
 run "云端识别与 API Key" python3 tests/test_cloud.py
 run "进度与 ETA 推算" python3 tests/test_progress.py
+run "上传重试与输出目录" python3 tests/test_upload_retry.py
+run "睡眠唤醒后的续跑" python3 tests/test_sleep_resume.py
 run "LaTeX → Word 公式" python3 tests/test_omml.py
 run "DocModel → docx 渲染" python3 tests/test_render_docx.py
 run "DocModel → Markdown 导出" python3 tests/test_render_md.py

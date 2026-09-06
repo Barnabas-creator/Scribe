@@ -23,6 +23,11 @@
     "排队中": "Queued",
     "正在识别文字与公式…": "Recognizing text & formulas…",
     "正在解析版面…": "Parsing layout…",
+    "正在切分大文件…": "Splitting the file…",
+    "正在上传第 {i}/{n} 段…": "Uploading part {i}/{n}…",
+    "上传完成，云端识别中…": "Uploaded; recognizing in the cloud…",
+    "云端识别中，已完成 {i}/{n} 段…": "Recognizing in the cloud, {i}/{n} parts done…",
+    "正在下载识别结果 {i}/{n}…": "Downloading results {i}/{n}…",
     "正在生成 Word…": "Generating Word…",
     "转换失败": "Conversion failed",
     "{size} · {pages} 页": "{size} · {pages} pages",
@@ -210,6 +215,23 @@
   }
 
   // ================= File list =================
+  // Cloud recognition reports which of its four steps is running; without this
+  // the row would read "recognizing" for the whole upload and the whole wait.
+  function stepText(step, t) {
+    if (!step) return null;
+    const { k, i, n } = step;
+    if (k === "split") return t("正在切分大文件…");
+    if (k === "upload") {
+      return i >= n ? t("上传完成，云端识别中…")
+                    : t("正在上传第 {i}/{n} 段…").replace("{i}", i + 1).replace("{n}", n);
+    }
+    if (k === "wait") return t("云端识别中，已完成 {i}/{n} 段…")
+      .replace("{i}", i).replace("{n}", n);
+    if (k === "fetch") return t("正在下载识别结果 {i}/{n}…")
+      .replace("{i}", Math.min(i + 1, n)).replace("{n}", n);
+    return null;
+  }
+
   const SUB = {
     queued: "排队中",
     ocr: "正在识别文字与公式…",
@@ -227,7 +249,7 @@
 
     const sub = failed ? (file.errNote || t("转换失败"))
       : file.status === "review" ? file.reviewNote
-      : busy ? t(SUB[file.status])
+      : busy ? (stepText(file.step, t) || t(SUB[file.status]))
       : t("{size} · {pages} 页").replace("{size}", file.size).replace("{pages}", file.pages);
 
     // ocr progress is time-estimated (10-81); parse/render are real stages.

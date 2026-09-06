@@ -179,7 +179,7 @@ def _recognize(input_path: Path, work: Path, opts: ConvertOptions,
         pool.stop()   # only one worker came up: run single-threaded
 
     json_path, image_dir = run_mineru(input_path, work / "mineru", opts,
-                                      should_cancel=should_cancel)
+                                      should_cancel=should_cancel, on_phase=phase)
     return load_content_list(json_path), image_dir
 
 

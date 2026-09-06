@@ -25,6 +25,36 @@ def _config_dir() -> Path:
     return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / _APP
 
 
+def desktop_dir() -> Path:
+    """The user's desktop.
+
+    On Windows the folder is not always ~/Desktop -- OneDrive redirection and
+    localized profiles both move it -- so the shell's own record is read first
+    and the home-relative guess is only the fallback.
+    """
+    if os.name == "nt":
+        try:
+            import winreg
+            key = r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders"
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as k:
+                p = Path(os.path.expandvars(winreg.QueryValueEx(k, "Desktop")[0]))
+            if p.is_dir():
+                return p
+        except Exception:
+            pass
+    p = Path.home() / "Desktop"
+    return p if p.is_dir() else Path.home()
+
+
+def default_output_dir() -> Path:
+    """Where conversions land unless the user picks somewhere else.
+
+    The desktop, deliberately: output that lands beside the source file is
+    invisible when the source came from some folder deep on another drive.
+    """
+    return desktop_dir() / "抄录输出"
+
+
 _DIR = _config_dir()
 _FILE = _DIR / "settings.json"
 
