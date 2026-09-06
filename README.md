@@ -46,6 +46,8 @@ PDF / 图片 → 可编辑 Word。公式转成 Word 原生公式（OMML），双
 - **macOS** — `.dmg`（Apple Silicon），拖进「应用程序」
 - **Windows** — `.exe` 安装程序
 
+目前 Releases 上只有 Windows 安装包（[v0.1.1](../../releases/tag/v0.1.1)）；macOS 版按下面「从源码运行」自行构建。
+
 macOS 版未签名，首次打开会被 Gatekeeper 拦。右键图标选「打开」，或执行：
 
 ```bash
